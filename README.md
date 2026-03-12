@@ -1,3 +1,86 @@
+# Problem Definition: CVRP with a Global Permutation
+
+The problem addressed is a specific variant of the Capacitated Vehicle Routing Problem (CVRP) where a global permutation of clients (often referred to as a "giant tour") is provided as input.
+
+It is notable that `.lcvrp` files contain ideal (or the best-found-so-far) permutations. Consequently, splitting the permutation into contiguous segments provides a mathematically optimal partitioning into routes or groups. We can achieve this using the Bellman-Ford algorithm ($O(n^2)$), or the faster Split algorithm ($O(n)$) authored by Thibaut Vidal.
+
+
+
+However, in version 3 of the competition package, the permutation from the file is shuffled, which yields a geometrically unordered and rather low-quality visit sequence. Nevertheless, Split remains a highly powerful tool, though its application must be precisely adapted to the specific characteristics of the problem.
+
+---
+
+## Key Operators Used
+
+### 1) Crossover
+
+* **Geometric (Neighbor-based):** Selects a random client from Parent 1 and assigns the route/group IDs of its nearest neighbors to the offspring. The remaining assignments are then inherited from Parent 2.
+* **SREX (Sequence Routing Crossover):** Exchanges entire routes. Approximately half of the routes are inherited from Parent 1, and then as many non-conflicting routes as possible are taken from Parent 2. The remaining clients that caused conflicts are inserted into routes using a regret-3 heuristic.
+
+### 2) Mutations
+
+* **MicroSplit:** Executes the Split algorithm described above but within a smaller window. This allows the algorithm to hit a "good" segment of the permutation and partition it optimally.
+* **MergeSplit:** Merges two routes/groups and performs an optimal Split on their clients. This is highly effective for "shuffling" and re-splitting, as ranks (sequence within the permutation) can easily become deadlocked.
+* **Ruin & Recreate (RR):** A standard operator in CVRP variants. It removes the route assignment of a client and its nearest neighbors (the exact amount depends on the disruption intensity), and then reinserts them while taking into account route capacities and the number of geometric neighbors in other routes.
+* **Adaptive LNS (ALNS):** The core idea is similar to standard RR, but the destruction phase relies on a dynamically selected strategy. Available destruction strategies target clusters within the permutation, over-capacitated routes, or the worst routes in terms of distance and fill rate.
+* **ReturnMinimizer:** Eliminates truck returns; for example, it reduces a 130% fill rate down to 100%.
+* **EliminateReturns:** Increases the fill rate (packing density). It removes the tail ends of routes where the vehicle deadheads (returns to the depot empty, e.g., utilization < 70%). From the evaluator's perspective, one route filled at 200% yields the exact same fitness result as two vehicles packed at 100%, provided the permutation segments do not overlap.
+
+### 3) Local Search
+
+*This component selects the applied operator based on its historical performance via Adaptive Operator Selection (AOS).*
+
+* **VND (Variable Neighborhood Descent):** For standard instance sizes, it relocates a client from one route to another or swaps two clients between routes. For feasible moves—those that do not violate capacity constraints—it uses delta evaluation. For infeasible moves, it simulates the cost of the entire route.
+* **Path Relinking (PR):** Calculates the topological difference between an individual and the guide solution (the best individual on a given island) and attempts to connect these solutions to find a superior intermediate configuration.
+* **Ejection Chains:** A sequence of chained client displacements and swaps.
+* **3-Swap, 4-Swap:** Selects geometrically close clients and tests their various combinations (evaluating $3!$ and $4!$ moves is computationally acceptable).
+
+---
+
+## Architecture: Heterogeneous Island Model
+
+The architecture utilizes a heterogeneous island model where each island is handled by a separate thread and is assigned a distinct operational role. Islands with even IDs act as "Explorers," while odd-ID islands are "Exploiters."
+
+* **Explorer:** Searches for new, promising areas of the solution space. It features a high mutation probability, fast VND (Relocate + Swap), and a larger population size.
+* **Exploiter (Exploit):** Polishes and uncovers deep local optima. It utilizes a lower mutation probability and heavy VND operations (Ejection Chains, Path Relinking, 3-Swap, 4-Swap).
+
+### Diversity Management
+
+Preventing premature convergence is critical and is managed using the Broken Pairs Distance (BPD) metric. In the event of population stagnation, a catastrophic mutation is triggered. After 5 unsuccessful catastrophes, the island transfers its individuals to other islands, completely restarts from scratch, and blocks incoming migration for 60 seconds.
+
+### Migration
+
+Migration operates asynchronously and depends on the health of a specific island. Aside from fitness criteria, an adequate structural difference in the BPD metric is a strict prerequisite for an individual entering an island. Broadcast mechanisms are also implemented: when any island finds a solution significantly better than the current global best, it broadcasts it to the remaining network of islands.
+
+---
+
+## Advanced Concepts
+
+### RoutePool & Beam Search
+
+A RoutePool classifies and stores the best routes found so far, an idea heavily inspired by Mixed Integer Programming (MIP) and Column Generation. Routes are evaluated based on their load fill rate and fitness contribution. Periodically, a Beam Search algorithm assembles a "Frankenstein" solution from these cached, non-overlapping routes. 
+
+If the resulting solution meets quality thresholds, it is introduced into the population; additionally, there is a 10% probability it is force-injected regardless of quality. This continuously supplies the population with high-quality building blocks, accelerating convergence during Local Search and recombination processes (like SREX). In practice, injecting a "Frankenstein" solution after a long period of stagnation frequently leads to finding a new global best immediately. Gene migration between islands is also active, exploiting the fact that each island searches a distinct area of the solution space.
+
+### Deduplication & Hashing
+
+64-bit caching mechanisms are enforced in three critical bottlenecks: during offspring generation, during the evaluation of complete solutions, and for caching individual routes within the Evaluator. Utilizing diverse hashing methods mitigates the risk of hash collisions. Route-level hashing is particularly vital for VND performance, where the entire route must be strictly simulated for unsafe moves.
+
+### Initialization Methods
+
+To guarantee high initial diversity, varying initialization methods are deployed, such as Random, Chunked, or K-Center. The K-Center implementation deliberately avoids using centroids (unlike K-Means), making it strictly viable for explicit cost matrix instances. Another mechanism involves creating a temporary permutation using a Double Bridge move, which is subsequently subjected to the Split algorithm, ensuring the initial routes maintain rigorous mathematical coherence.
+
+
+
+
+
+
+
+
+
+
+
+Polska wersja:
 Można zauważyć, pliki .lcvrp zawierają idealne ( albo najlepsze dotychczas znalezione ) permutacje. Dzięki temu, podzielenie permutacji na ciągłe fragmenty da nam optymalnie matematyczny podział do grupy. Możemy wykorzystać do tego algorytm Bellmana-Forda (O(n^2)), lub szybszy algorytm Split (O(n)) autorstwa Thibauta Vidala. Jednakże, w 3 wersji paczki konkursowej permutacja z pliku jest tasowana, przez co dostajemy nieuporządkowaną geometrycznie i raczej słabej jakości kolejność odwiedzin. Niemniej jednak uważam, że Split jest nadal potężnym narzędziem, jednak używanie go trzeba dostosować do specyfiki problemu.
 
 Najważniejsze stosowane operatory:
